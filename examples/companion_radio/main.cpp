@@ -35,11 +35,15 @@ static uint32_t _atoi(const char* sp) {
 #endif
 
 #ifdef ESP32
-  #ifdef WIFI_SSID
+  #if defined(WIFI_SSID) || defined(USE_CH390D)
     #include <helpers/esp32/SerialWifiInterface.h>
     SerialWifiInterface serial_interface;
     #ifndef TCP_PORT
       #define TCP_PORT 5000
+    #endif
+    #ifdef USE_CH390D
+      #include <driver/spi_master.h>
+      #include <ESP32_CH390.h>
     #endif
   #elif defined(BLE_PIN_CODE)
     #include <helpers/esp32/SerialBLEInterface.h>
@@ -199,8 +203,10 @@ void setup() {
     #endif
   );
 
+#if defined(WIFI_SSID) || defined(USE_CH390D)
+  board.setInhibitSleep(true);   // prevent sleep when network is active
+
 #ifdef WIFI_SSID
-  board.setInhibitSleep(true);   // prevent sleep when WiFi is active
   WiFi.setAutoReconnect(true);
 
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
@@ -211,9 +217,41 @@ void setup() {
           WIFI_DEBUG_PRINTLN("WiFi connected successfully!");
           wifi_needs_reconnect = false;
       }
+#ifdef USE_CH390D
+      else if (event == ARDUINO_EVENT_ETH_CONNECTED) {
+          WIFI_DEBUG_PRINTLN("ETH link up");
+      } else if (event == ARDUINO_EVENT_ETH_GOT_IP) {
+          WIFI_DEBUG_PRINTLN("ETH got IP: %s", CH390.localIP().toString().c_str());
+      } else if (event == ARDUINO_EVENT_ETH_DISCONNECTED) {
+          WIFI_DEBUG_PRINTLN("ETH link down");
+      } else if (event == ARDUINO_EVENT_ETH_START) {
+          WIFI_DEBUG_PRINTLN("ETH started");
+      }
+#endif
   });
 
   WiFi.begin(WIFI_SSID, WIFI_PWD);
+#endif
+
+#ifdef USE_CH390D
+  {
+    ch390_config_t eth_conf = CH390_DEFAULT_CONFIG();
+    eth_conf.spi_host = SPI2_HOST;    // FSPI: LoRa already owns HSPI/SPI3 on this board
+    eth_conf.spi_cs_gpio = ETH_CS_PIN;
+    eth_conf.spi_sck_gpio = ETH_SCLK_PIN;
+    eth_conf.spi_mosi_gpio = ETH_MOSI_PIN;
+    eth_conf.spi_miso_gpio = ETH_MISO_PIN;
+    eth_conf.int_gpio = ETH_INT_PIN;
+    eth_conf.reset_gpio = -1;         // M7 has no ETH reset line
+    eth_conf.spi_clock_mhz = 20;
+    if (CH390.begin(eth_conf)) {
+      WIFI_DEBUG_PRINTLN("CH390 Ethernet started (DHCP)");
+    } else {
+      WIFI_DEBUG_PRINTLN("CH390 Ethernet init FAILED");
+    }
+  }
+#endif
+
   serial_interface.begin(TCP_PORT);
 #elif defined(BLE_PIN_CODE)
   serial_interface.begin(BLE_NAME_PREFIX, the_mesh.getNodePrefs()->node_name, the_mesh.getBLEPin());
